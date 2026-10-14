@@ -1,0 +1,37 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function inTenant(t) {
+      return signedIn() && request.auth.token.get('tenantId', null) == t;
+    }
+
+    // Document library. Nobody can read files straight from Storage: downloads come from /api/library after
+    // a permission check. A person can only CREATE the one file the server approved for them (/api/library
+    // "prepare" writes a document with status "uploading" and their uid), and never overwrite or delete.
+    match /tenants/{tenantId}/library/{docId}/{fileName} {
+      allow read: if false;
+      allow update, delete: if false;
+      allow create: if inTenant(tenantId)
+        && request.resource.size < 15 * 1024 * 1024
+        && firestore.get(/databases/(default)/documents/tenants/$(tenantId)/library/$(docId)).data.uploaderId == request.auth.uid
+        && firestore.get(/databases/(default)/documents/tenants/$(tenantId)/library/$(docId)).data.status == 'uploading'
+        && firestore.get(/databases/(default)/documents/tenants/$(tenantId)/library/$(docId)).data.storageName == fileName;
+    }
+
+    // Platform assets (logos, template files): super admin only.
+    match /platform/{allPaths=**} {
+      allow read: if signedIn();
+      allow write: if signedIn()
+        && request.auth.token.get('platformRole', null) == 'super_admin';
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

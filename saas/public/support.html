@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Contact us</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <meta name="theme-color" content="#2f6bff">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    main.pub { max-width: 520px; margin: 0 auto; padding: 1rem; }
+    .pub label { display: block; font-size: .85rem; color: var(--muted); margin: .7rem 0 .15rem; }
+    .pub input, .pub textarea { width: 100%; padding: .6rem; border: 1px solid var(--line); border-radius: 8px; font: inherit; background: #fff; }
+    .pub textarea { min-height: 7rem; }
+    .pub .hp { position: absolute; left: -9999px; height: 0; overflow: hidden; }
+    .pub button { margin-top: 1rem; width: 100%; padding: .75rem; border: 0; border-radius: 10px; background: var(--brand); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+    .pub button[disabled] { opacity: .6; }
+  </style>
+</head>
+<body>
+  <main class="pub" id="app"><p class="muted">Loading…</p></main>
+  <script type="module" src="/support.js"></script>
+</body>
+</html>

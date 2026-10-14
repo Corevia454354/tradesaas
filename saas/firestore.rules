@@ -1,0 +1,198 @@
+rules_version = '2';
+
+// Deploy with:  npm run deploy:rules   (Firestore + Storage rules only; no Functions, no Hosting)
+//
+// Custom claims set by the Vercel API (api/tenant.js, scripts/make-super-admin.js):
+//   tenantId      which business the user belongs to
+//   role          owner | dept_head | manager | employee
+//   platformRole  super_admin | support | billing | read_only   (platform staff only)
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() {
+      return request.auth != null;
+    }
+    function claim(name) {
+      return request.auth.token.get(name, null);
+    }
+    function isPlatform() {
+      return signedIn() && claim('platformRole') != null;
+    }
+    function isSuperAdmin() {
+      return signedIn() && claim('platformRole') == 'super_admin';
+    }
+    function inTenant(t) {
+      return signedIn() && claim('tenantId') == t;
+    }
+    function tenantData(t) {
+      return get(/databases/$(database)/documents/tenants/$(t)).data;
+    }
+    // Suspended and cancelled businesses are read-only.
+    function active(t) {
+      return tenantData(t).status in ['active', 'past_due'];
+    }
+    // Tier gating: the business's computed entitlements must include the feature.
+    // Entitlements are written only by the server, never by a browser.
+    function canWrite(t, feature) {
+      return inTenant(t) && active(t) && feature in tenantData(t).entitlements.features;
+    }
+
+    // ---------- businesses ----------
+    // Roles: owner > dept_head > manager > employee. On the Free/Standard plan only the owner exists.
+    // Staff (anyone but the owner) can use the app only while the plan includes the team feature.
+    function role() {
+      return claim('role');
+    }
+    function isOwner(t) {
+      return inTenant(t) && role() == 'owner';
+    }
+    function isManager(t) {
+      return inTenant(t) && role() in ['owner', 'dept_head', 'manager'];
+    }
+    function staffOk(t) {
+      return role() == 'owner' || 'hierarchy' in tenantData(t).entitlements.features;
+    }
+    // Records written by /api/team carry visibleTo: everyone who may read them.
+    function sees(t) {
+      return inTenant(t) && staffOk(t) && request.auth.uid in resource.data.visibleTo;
+    }
+
+    match /tenants/{tenantId} {
+      allow read: if inTenant(tenantId) || isPlatform();
+      // tier, status, entitlements, overrides, branding and billing are server-only.
+      allow write: if false;
+
+      match /members/{uid} {
+        allow read: if (inTenant(tenantId) && staffOk(tenantId)) || isPlatform();
+        allow write: if false; // created and changed by /api/team so the hierarchy cannot be forged
+      }
+
+      // Hourly rates. Owner only.
+      match /private/{uid} {
+        allow read: if isOwner(tenantId);
+        allow write: if false;
+      }
+
+      // Business profile shown on documents, and team settings (leave allowances). Owner writes.
+      match /settings/{doc} {
+        allow read: if (inTenant(tenantId) && staffOk(tenantId)) || isPlatform();
+        allow write: if inTenant(tenantId) && active(tenantId) && claim('role') == 'owner';
+      }
+
+      // ----- the core business records
+      match /clients/{id} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId);
+        allow create, update, delete: if isManager(tenantId) && active(tenantId);
+      }
+
+      match /quotes/{id} {
+        allow read: if isManager(tenantId);
+        allow create, update, delete: if isManager(tenantId) && canWrite(tenantId, 'quotes');
+      }
+
+      // Jobs are created by /api/jobs so the plan's monthly limit is enforced on the server.
+      match /jobs/{id} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId);
+        allow create: if false;
+        allow update, delete: if isManager(tenantId) && canWrite(tenantId, 'jobs');
+        // Employees may only move a job along and add notes.
+        allow update: if inTenant(tenantId) && canWrite(tenantId, 'jobs') && role() == 'employee'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'notes', 'updatedAt']);
+      }
+
+      // Monthly usage counters (jobs created this month). Written only by the server.
+      match /usage/{id} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId);
+        allow write: if false;
+      }
+
+      // Compliance records are legally required: a draft is editable, an issued
+      // certificate is locked for good, and nothing can be deleted.
+      match /certificates/{id} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId);
+        allow create: if inTenant(tenantId) && canWrite(tenantId, 'certificates')
+          && request.resource.data.status in ['draft', 'issued'];
+        allow update: if inTenant(tenantId) && canWrite(tenantId, 'certificates')
+          && resource.data.status == 'draft'
+          && request.resource.data.status in ['draft', 'issued'];
+        allow delete: if false;
+      }
+
+      // Only drafts can be deleted; sent and paid invoices stay on record.
+      match /invoices/{id} {
+        allow read: if isManager(tenantId);
+        allow create, update: if isManager(tenantId) && canWrite(tenantId, 'invoices');
+        allow delete: if isManager(tenantId) && canWrite(tenantId, 'invoices') && resource.data.status == 'draft';
+      }
+
+      // ----- Business tier: the browser only reads; /api/team does every write
+      match /tasks/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /workDocs/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /timeEntries/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /leave/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /expenses/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /payslips/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      // Business document library and customer support inbox: read-only for the browser, listed by visibleTo.
+      match /library/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      match /tickets/{id} {
+        allow read: if sees(tenantId);
+        allow write: if false;
+      }
+      // Team calendar: everyone in the business can read every event; /api/calendar does the writing.
+      match /events/{id} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId);
+        allow write: if false;
+      }
+      // What each hour of work cost (rate x hours). Owner only.
+      match /labourCosts/{id} {
+        allow read: if isOwner(tenantId);
+        allow write: if false;
+      }
+
+      // Chat: only the people in a group can read it, not even the owner.
+      match /chats/{chatId} {
+        allow read: if inTenant(tenantId) && staffOk(tenantId) && request.auth.uid in resource.data.members;
+        allow write: if false;
+        match /messages/{mid} {
+          allow read: if inTenant(tenantId) && staffOk(tenantId)
+            && request.auth.uid in get(/databases/$(database)/documents/tenants/$(tenantId)/chats/$(chatId)).data.members;
+          allow write: if false;
+        }
+      }
+    }
+
+    // ---------- platform ----------
+    match /auditLogs/{id} {
+      allow read: if isSuperAdmin();
+      allow write: if false; // written by /api/admin only
+    }
+
+    // Everything else (including ownerIndex/, the one-business-per-owner guard) is closed.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

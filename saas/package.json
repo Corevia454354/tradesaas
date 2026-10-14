@@ -1,0 +1,17 @@
+{
+  "name": "trades-saas",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/lib.test.mjs && node test/plans.test.mjs && node test/validate.test.mjs && node test/team.test.mjs && node test/biz.test.mjs",
+    "dev": "vercel dev",
+    "deploy:rules": "npx firebase-tools deploy --only firestore,storage",
+    "make-admin": "node scripts/make-super-admin.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}
